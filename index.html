@@ -35,6 +35,10 @@
   .quick input{flex:1;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:12px;padding:14px;font-size:16px;}
   .quick input:focus{outline:none;border-color:var(--accent);}
   .quick button{background:var(--accent);border:none;color:#08120a;font-weight:700;font-size:22px;width:52px;border-radius:12px;cursor:pointer;}
+  .quick .mic{background:var(--card2);color:var(--text);border:1px solid var(--border);font-size:20px;width:52px;border-radius:12px;cursor:pointer;flex-shrink:0;}
+  .quick .mic.listening{background:var(--danger);border-color:var(--danger);color:#fff;animation:pulse 1.2s infinite;}
+  .quick .mic.hidden{display:none;}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(239,68,68,.5);}70%{box-shadow:0 0 0 10px rgba(239,68,68,0);}100%{box-shadow:0 0 0 0 rgba(239,68,68,0);}}
   .hint{color:var(--muted);font-size:12px;margin:-4px 0 16px 4px;}
   .toast{display:flex;align-items:center;gap:8px;background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin-bottom:16px;font-size:14px;}
   .toast .cat-icon{font-size:18px;}
@@ -80,9 +84,10 @@
 
   <form class="quick" id="quickForm">
     <input id="quickInput" type="text" inputmode="text" placeholder="ex: almoço 35" autocomplete="off">
+    <button type="button" class="mic hidden" id="btnMic" aria-label="Falar gasto">🎤</button>
     <button type="submit">+</button>
   </form>
-  <div class="hint">Digite o gasto e o valor, ex: "uber 18,90"</div>
+  <div class="hint" id="hintText">Digite o gasto e o valor, ex: "uber 18,90"</div>
 
   <div id="toastArea"></div>
   <div id="list"></div>
@@ -132,6 +137,7 @@
   }
 
   function parseQuickInput(text){
+    text = text.replace(/\breais?\b/gi, '').replace(/\br\$\s*/gi, '');
     var match = text.match(/(\d+(?:[.,]\d{1,2})?)(?!.*\d)/);
     if (!match) return null;
     var amount = parseFloat(match[1].replace(',', '.'));
@@ -175,7 +181,9 @@
     btnSettings: document.getElementById('btnSettings'),
     btnCancel: document.getElementById('btnCancel'),
     btnSave: document.getElementById('btnSave'),
-    btnSuggest: document.getElementById('btnSuggest')
+    btnSuggest: document.getElementById('btnSuggest'),
+    btnMic: document.getElementById('btnMic'),
+    hintText: document.getElementById('hintText')
   };
 
   function currentMonthExpenses(){
@@ -341,6 +349,43 @@
     render();
     showToast(expense);
   });
+
+  var SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (SpeechRecognitionCtor){
+    els.btnMic.classList.remove('hidden');
+    var recognition = new SpeechRecognitionCtor();
+    recognition.lang = 'pt-BR';
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    var listening = false;
+    var defaultHint = els.hintText.textContent;
+
+    recognition.onstart = function(){
+      listening = true;
+      els.btnMic.classList.add('listening');
+      els.hintText.textContent = 'Ouvindo... fale o gasto, ex: "uber 36 reais"';
+    };
+    recognition.onresult = function(ev){
+      var transcript = ev.results[0][0].transcript;
+      els.quickInput.value = transcript;
+      if (els.quickForm.requestSubmit) els.quickForm.requestSubmit();
+      else els.quickForm.dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
+    };
+    recognition.onerror = function(){
+      els.hintText.textContent = 'Não consegui ouvir. Tente de novo ou digite o gasto.';
+    };
+    recognition.onend = function(){
+      listening = false;
+      els.btnMic.classList.remove('listening');
+      setTimeout(function(){ els.hintText.textContent = defaultHint; }, 2500);
+    };
+
+    els.btnMic.addEventListener('click', function(){
+      if (listening){ recognition.stop(); return; }
+      try { recognition.start(); } catch(e){}
+    });
+  }
 
   var settingsMode = 'budget';
   function openBudgetModal(){
