@@ -67,6 +67,8 @@
   .modal .save{background:var(--accent);color:#08120a;}
   .modal .cancel{background:var(--card2);color:var(--text);}
   .modal .suggest{background:none;border:none;color:var(--accent);font-size:13px;margin:-8px 0 14px 0;padding:0;cursor:pointer;}
+  .backup-row{display:flex;gap:10px;margin-top:14px;padding-top:14px;border-top:1px solid var(--border);}
+  .backup-btn{flex:1;background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:11px 6px;font-size:12.5px;font-weight:600;cursor:pointer;}
   #reportView.hidden,#mainView.hidden{display:none;}
   .report-header{display:flex;align-items:center;gap:10px;margin-bottom:16px;}
   .back-btn{background:none;border:none;color:var(--text);font-size:15px;cursor:pointer;padding:6px 4px 6px 0;}
@@ -137,6 +139,11 @@
       <button class="cancel" id="btnCancel">Cancelar</button>
       <button class="save" id="btnSave">Salvar</button>
     </div>
+    <div class="backup-row">
+      <button class="backup-btn" id="btnExport">⬇️ Exportar backup</button>
+      <button class="backup-btn" id="btnImport">⬆️ Importar backup</button>
+    </div>
+    <input type="file" id="fileImport" accept="application/json" style="display:none;">
   </div>
 </div>
 
@@ -201,6 +208,10 @@
   var budgets = load('financas.budgets', {});
   var expenses = load('financas.expenses', []);
 
+  if (navigator.storage && navigator.storage.persist) {
+    navigator.storage.persist();
+  }
+
   var els = {
     balanceValue: document.getElementById('balanceValue'),
     barFill: document.getElementById('barFill'),
@@ -218,6 +229,9 @@
     btnCancel: document.getElementById('btnCancel'),
     btnSave: document.getElementById('btnSave'),
     btnSuggest: document.getElementById('btnSuggest'),
+    btnExport: document.getElementById('btnExport'),
+    btnImport: document.getElementById('btnImport'),
+    fileImport: document.getElementById('fileImport'),
     btnMic: document.getElementById('btnMic'),
     hintText: document.getElementById('hintText'),
     mainView: document.getElementById('mainView'),
@@ -550,6 +564,58 @@
     els.reportView.classList.add('hidden');
     els.mainView.classList.remove('hidden');
   }
+
+  els.btnExport.addEventListener('click', function(){
+    var data = {budgets: budgets, expenses: expenses, exportedAt: new Date().toISOString()};
+    var blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    var today = new Date();
+    a.href = url;
+    a.download = 'backup-financas-' + monthKey(today) + '-' + String(today.getDate()).padStart(2,'0') + '.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  });
+
+  els.btnImport.addEventListener('click', function(){ els.fileImport.click(); });
+  els.fileImport.addEventListener('change', function(){
+    var file = els.fileImport.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(){
+      try {
+        var data = JSON.parse(reader.result);
+        if (!data || typeof data !== 'object') throw new Error('formato inválido');
+        var importedExpenses = Array.isArray(data.expenses) ? data.expenses : [];
+        var importedBudgets = (data.budgets && typeof data.budgets === 'object') ? data.budgets : {};
+
+        var existingIds = {};
+        expenses.forEach(function(e){ existingIds[e.id] = true; });
+        var added = 0;
+        importedExpenses.forEach(function(e){
+          if (e && e.id && !existingIds[e.id]){
+            expenses.push(e);
+            existingIds[e.id] = true;
+            added++;
+          }
+        });
+        Object.keys(importedBudgets).forEach(function(mk){
+          if (!(mk in budgets)) budgets[mk] = importedBudgets[mk];
+        });
+
+        save('financas.expenses', expenses);
+        save('financas.budgets', budgets);
+        render();
+        els.fileImport.value = '';
+        alert(added + ' gasto(s) importado(s) com sucesso.');
+      } catch(err){
+        alert('Não consegui ler esse arquivo de backup. Verifique se é o arquivo correto.');
+      }
+    };
+    reader.readAsText(file);
+  });
 
   els.btnReports.addEventListener('click', openReportView);
   els.btnReportBack.addEventListener('click', closeReportView);
