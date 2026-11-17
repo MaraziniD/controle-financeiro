@@ -1,0 +1,7 @@
+# Nunca versionar dados reais, backups ou chaves
+backup-*.json
+*.backup.json
+dados/
+.env
+.env.*
+config.local.js
