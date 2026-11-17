@@ -447,7 +447,7 @@
       return new Promise(function(resolve, reject){
         if (window.supabase) return resolve();
         var sc = document.createElement('script');
-        sc.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js';
+        sc.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js';
         sc.onload = resolve; sc.onerror = reject;
         document.head.appendChild(sc);
       });
