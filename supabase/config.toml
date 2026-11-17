@@ -2,3 +2,8 @@
 # a segurança vem da assinatura conferida com WA_APP_SECRET.
 [functions.whatsapp]
 verify_jwt = false
+
+# O Telegram, o agendador e o app chamam esta função; a segurança vem do
+# TG_WEBHOOK_SECRET e, nas chamadas do app, do login conferido dentro da função.
+[functions.telegram]
+verify_jwt = false
