@@ -113,7 +113,14 @@
   .trend-bar.current{background:var(--info);}
   .trend-value{font-size:10px;color:var(--muted);white-space:nowrap;}
   .trend-label{font-size:11px;color:var(--muted);text-transform:capitalize;}
+  .login{max-width:360px;margin:40px auto 0;text-align:center;}
+  .login h2{font-size:20px;margin:0 0 6px;}
+  .login p{color:var(--muted);font-size:14px;line-height:1.5;margin:0 0 18px;}
+  .login .field{text-align:left;}
+  .sync-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:var(--muted);vertical-align:middle;}
+  .sync-dot.on{background:var(--accent);} .sync-dot.err{background:var(--danger);}
 </style>
+<script src="config.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -123,6 +130,17 @@
   </header>
 
   <!-- ===================== INÍCIO ===================== -->
+  <section id="view-login" class="hidden">
+    <div class="login">
+      <div style="font-size:44px">🔐</div>
+      <h2>Entrar</h2>
+      <p id="loginText">Digite seu e-mail. Vamos mandar um link para você entrar, sem senha.</p>
+      <div class="field"><label for="loginEmail">E-mail</label><input id="loginEmail" type="email" inputmode="email" autocomplete="email" placeholder="voce@email.com"></div>
+      <button class="btn primary" id="btnLogin">Mandar link de acesso</button>
+      <div class="muted-note" id="loginMsg" style="margin-top:14px"></div>
+    </div>
+  </section>
+
   <section id="view-inicio">
     <div class="card">
       <div class="label">Sobra prevista do mês</div>
@@ -370,8 +388,8 @@
     }
   };
 
-  function loadSettings(){
-    var s = Store.load('financas.settings', null);
+  function loadSettings(){ return loadSettingsFrom(Store.load('financas.settings', null)); }
+  function loadSettingsFrom(s){
     if (!s) return clone(DEFAULT_SETTINGS);
     var d = clone(DEFAULT_SETTINGS);
     s.incomes = Object.assign(d.incomes, s.incomes || {});
@@ -397,8 +415,168 @@
     if (e.category === 'Alimentação' && /mercado|feira/i.test(normalize(e.text))) e.category = 'Mercado';
   });
 
-  function saveExpenses(){ Store.save('financas.expenses', expenses); }
-  function saveSettings(){ Store.save('financas.settings', settings); }
+  function saveExpenses(){ Store.save('financas.expenses', expenses); Cloud.schedule(); }
+  function saveSettings(){ Store.save('financas.settings', settings); Cloud.schedule(); }
+
+  /* ---------- Nuvem (Supabase) ----------
+     Quando config.js tem o endereço do banco, o app pede login e
+     sincroniza tudo com o banco, para o casal ver os mesmos dados.
+     Funciona por diferença: depois de cada mudança, envia só o que mudou. */
+  var Cloud = (function(){
+    var cfg = window.FINANCAS_CONFIG || {};
+    var enabled = !!(cfg.supabaseUrl && cfg.supabaseAnonKey);
+    var sb = null, householdId = null, timer = null, busy = false, again = false;
+    var snap = { expenses: {}, settings: '', bills: {}, alerts: {} };
+
+    function expJson(e){ return JSON.stringify([e.text, +e.amount, e.category, e.card || null, e.person || null, e.date]); }
+    function billKeys(bp){ var o = {}; Object.keys(bp).forEach(function(mk){ Object.keys(bp[mk] || {}).forEach(function(id){ if (bp[mk][id]) o[mk + '|' + id] = true; }); }); return o; }
+
+    function takeSnapshot(){
+      snap.expenses = {}; expenses.forEach(function(e){ snap.expenses[e.id] = expJson(e); });
+      snap.settings = JSON.stringify(settings);
+      snap.bills = billKeys(billsPaid);
+      snap.alerts = Object.assign({}, alertsSent);
+    }
+
+    function setStatus(state){
+      var d = document.getElementById('syncDot');
+      if (d) d.className = 'sync-dot' + (state === 'on' ? ' on' : state === 'err' ? ' err' : '');
+    }
+
+    function loadLib(){
+      return new Promise(function(resolve, reject){
+        if (window.supabase) return resolve();
+        var sc = document.createElement('script');
+        sc.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js';
+        sc.onload = resolve; sc.onerror = reject;
+        document.head.appendChild(sc);
+      });
+    }
+
+    function row(e){
+      return { id: e.id, household_id: householdId, text: e.text, amount: +e.amount, category: e.category, card: e.card || null, person: e.person || null, date: e.date };
+    }
+
+    function push(){
+      if (!sb || !householdId) return Promise.resolve();
+      if (busy){ again = true; return Promise.resolve(); }
+      busy = true;
+      var jobs = [];
+      var cur = {}; expenses.forEach(function(e){ cur[e.id] = e; });
+      var up = expenses.filter(function(e){ return snap.expenses[e.id] !== expJson(e); }).map(row);
+      var del = Object.keys(snap.expenses).filter(function(id){ return !cur[id]; });
+      if (up.length) jobs.push(sb.from('expenses').upsert(up));
+      if (del.length) jobs.push(sb.from('expenses').delete().in('id', del));
+      var sj = JSON.stringify(settings);
+      if (sj !== snap.settings) jobs.push(sb.from('households').update({ settings: settings, updated_at: new Date().toISOString() }).eq('id', householdId));
+      var bk = billKeys(billsPaid);
+      var addB = Object.keys(bk).filter(function(k){ return !snap.bills[k]; }).map(function(k){ var p = k.split('|'); return { household_id: householdId, month: p[0], bill_id: p[1] }; });
+      Object.keys(snap.bills).filter(function(k){ return !bk[k]; }).forEach(function(k){
+        var p = k.split('|');
+        jobs.push(sb.from('bills_paid').delete().eq('household_id', householdId).eq('month', p[0]).eq('bill_id', p[1]));
+      });
+      if (addB.length) jobs.push(sb.from('bills_paid').upsert(addB));
+      var al = Object.keys(alertsSent).filter(function(k){ return snap.alerts[k] !== alertsSent[k]; }).map(function(k){ return { household_id: householdId, key: k, level: alertsSent[k] }; });
+      if (al.length) jobs.push(sb.from('alerts_sent').upsert(al));
+      return Promise.all(jobs).then(function(results){
+        var err = results.filter(function(r){ return r && r.error; })[0];
+        if (err) throw err.error;
+        takeSnapshot(); setStatus('on');
+      }).catch(function(err){ console.error(err); setStatus('err'); })
+        .then(function(){ busy = false; if (again){ again = false; push(); } });
+    }
+
+    function pull(){
+      var since = new Date(); since.setMonth(since.getMonth() - 13);
+      return Promise.all([
+        sb.from('households').select('settings').eq('id', householdId).single(),
+        sb.from('expenses').select('id,text,amount,category,card,person,date').eq('household_id', householdId).gte('date', since.toISOString()).order('date', { ascending: false }).limit(5000),
+        sb.from('bills_paid').select('month,bill_id').eq('household_id', householdId),
+        sb.from('alerts_sent').select('key,level').eq('household_id', householdId)
+      ]).then(function(r){
+        r.forEach(function(x){ if (x.error) throw x.error; });
+        var s = r[0].data && r[0].data.settings;
+        if (s && Object.keys(s).length){ Store.save('financas.settings', s); settings = loadSettings(); }
+        expenses = (r[1].data || []).map(function(e){ e.amount = +e.amount; return e; });
+        billsPaid = {}; (r[2].data || []).forEach(function(b){ (billsPaid[b.month] = billsPaid[b.month] || {})[b.bill_id] = true; });
+        alertsSent = {}; (r[3].data || []).forEach(function(a){ alertsSent[a.key] = a.level; });
+        Store.save('financas.expenses', expenses); Store.save('financas.billsPaid', billsPaid); Store.save('financas.alertsSent', alertsSent);
+        takeSnapshot(); setStatus('on');
+      });
+    }
+
+    var pullTimer = null;
+    function listen(){
+      sb.channel('casa').on('postgres_changes', { event: '*', schema: 'public', table: 'expenses', filter: 'household_id=eq.' + householdId }, function(ev){
+        if (ev.eventType === 'INSERT' && ev.new && ev.new.person && ev.new.person !== me && !snap.expenses[ev.new.id]){
+          notify('💳 ' + ev.new.person + ' lançou um gasto', ev.new.text + ' · ' + fmtMoney(+ev.new.amount));
+        }
+        clearTimeout(pullTimer); pullTimer = setTimeout(function(){ pull().then(function(){ render(); checkLimitAlerts(); }); }, 400);
+      }).on('postgres_changes', { event: '*', schema: 'public', table: 'households', filter: 'id=eq.' + householdId }, function(){
+        clearTimeout(pullTimer); pullTimer = setTimeout(function(){ pull().then(render); }, 400);
+      }).on('postgres_changes', { event: '*', schema: 'public', table: 'bills_paid', filter: 'household_id=eq.' + householdId }, function(){
+        clearTimeout(pullTimer); pullTimer = setTimeout(function(){ pull().then(render); }, 400);
+      }).subscribe();
+    }
+
+    // Na primeira vez na nuvem, sobe o que já estava guardado no celular.
+    function mergeLocal(localExpenses, localSettings){
+      if (Store.load('financas.uploaded', false)) return Promise.resolve();
+      var ids = {}; expenses.forEach(function(e){ ids[e.id] = true; });
+      localExpenses.forEach(function(e){ if (!ids[e.id]){ if (!e.person) e.person = me; expenses.push(e); } });
+      var cloudEmpty = !snap.settings || snap.settings === JSON.stringify(loadSettingsFrom(null));
+      if (cloudEmpty && localSettings) settings = localSettings;
+      return push().then(function(){ Store.save('financas.uploaded', true); });
+    }
+
+    function start(onReady){
+      showOnly('login');
+      loadLib().then(function(){
+        sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, { auth: { persistSession: true, detectSessionInUrl: true } });
+        return sb.auth.getSession();
+      }).then(function(res){
+        var session = res.data && res.data.session;
+        if (!session){ setupLogin(); return; }
+        return sb.from('members').select('household_id,name').eq('user_id', session.user.id).maybeSingle().then(function(m){
+          if (m.error) throw m.error;
+          if (!m.data){
+            $('loginText').textContent = 'Este e-mail (' + session.user.email + ') ainda não está liberado. Peça para o Danilo cadastrar você.';
+            $('btnLogin').textContent = 'Sair e tentar outro e-mail';
+            $('btnLogin').onclick = function(){ sb.auth.signOut().then(function(){ location.reload(); }); };
+            return;
+          }
+          householdId = m.data.household_id;
+          me = m.data.name; Store.save('financas.me', me);
+          var localExp = expenses.slice(), localSet = settings;
+          return pull().then(function(){ return mergeLocal(localExp, localSet); }).then(function(){ listen(); onReady(); });
+        });
+      }).catch(function(err){
+        console.error(err);
+        // Sem internet: usa o que está guardado no celular.
+        setStatus('err'); onReady();
+      });
+    }
+
+    function setupLogin(){
+      $('btnLogin').onclick = function(){
+        var email = $('loginEmail').value.trim();
+        if (!/^\S+@\S+\.\S+$/.test(email)){ $('loginMsg').textContent = 'Digite um e-mail válido.'; return; }
+        $('btnLogin').disabled = true;
+        sb.auth.signInWithOtp({ email: email, options: { emailRedirectTo: location.origin + location.pathname, shouldCreateUser: true } }).then(function(r){
+          $('btnLogin').disabled = false;
+          $('loginMsg').textContent = r.error ? 'Não consegui mandar o link: ' + r.error.message : 'Pronto! Abra o e-mail que mandamos para ' + email + ' e toque no link. Pode fechar esta tela.';
+        });
+      };
+    }
+
+    return {
+      enabled: enabled,
+      start: start,
+      schedule: function(){ if (!enabled || !householdId) return; clearTimeout(timer); timer = setTimeout(push, 300); },
+      signOut: function(){ if (sb) sb.auth.signOut().then(function(){ Store.save('financas.uploaded', false); location.reload(); }); },
+      isOn: function(){ return !!householdId; }
+    };
+  })();
 
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
 
@@ -494,7 +672,7 @@
           : 'A categoria ' + cat + ' chegou a ' + Math.floor(pct) + '% do limite do mês. Restam ' + fmtMoney(lim - spent) + '.';
       }));
     });
-    Store.save('financas.alertsSent', alertsSent);
+    Store.save('financas.alertsSent', alertsSent); Cloud.schedule();
     fired.forEach(function(f){
       showAlert(f.t >= 100 ? '🚨' : '⚠️', f.msg);
       notify(f.t >= 100 ? 'Limite estourado' : 'Limite chegando', f.msg);
@@ -789,7 +967,7 @@
       cb.addEventListener('change', function(){
         billsPaid[mk] = billsPaid[mk] || {};
         if (cb.checked) billsPaid[mk][b.id] = true; else delete billsPaid[mk][b.id];
-        Store.save('financas.billsPaid', billsPaid);
+        Store.save('financas.billsPaid', billsPaid); Cloud.schedule();
         render();
       });
       row.appendChild(cb);
@@ -924,7 +1102,12 @@
   /* ---------- Ajustes ---------- */
   function renderSettings(){
     var mc = $('meChoices'); mc.innerHTML = '';
-    PEOPLE.forEach(function(p){
+    if (Cloud.isOn()){
+      mc.innerHTML = '<span class="chip on">' + esc(me) + '</span>';
+      var out = document.createElement('button'); out.type = 'button'; out.className = 'chip'; out.textContent = 'Sair';
+      out.addEventListener('click', Cloud.signOut);
+      mc.appendChild(out);
+    } else PEOPLE.forEach(function(p){
       var b = document.createElement('button'); b.type = 'button';
       b.className = 'chip' + (me === p ? ' on' : ''); b.textContent = p;
       b.addEventListener('click', function(){ setMe(p); renderSettings(); });
@@ -999,7 +1182,7 @@
           settings = loadSettings();
         }
         if (data.billsPaid) billsPaid = Object.assign(billsPaid, data.billsPaid);
-        saveExpenses(); Store.save('financas.billsPaid', billsPaid);
+        Store.save('financas.billsPaid', billsPaid); saveExpenses(); saveSettings();
         $('fileImport').value = '';
         render(); renderSettings();
         alert(added + ' gasto(s) importado(s)' + (data.settings ? ' e ajustes restaurados.' : '.'));
@@ -1012,7 +1195,8 @@
   var currentView = 'inicio';
   function showView(v){
     currentView = v;
-    ['inicio','contas','relatorios','ajustes'].forEach(function(x){ $('view-' + x).classList.toggle('hidden', x !== v); });
+    ['login','inicio','contas','relatorios','ajustes'].forEach(function(x){ $('view-' + x).classList.toggle('hidden', x !== v); });
+    document.querySelector('nav.tabs').classList.toggle('hidden', v === 'login');
     document.querySelectorAll('nav.tabs button').forEach(function(b){ b.classList.toggle('on', b.dataset.view === v); });
     if (v === 'relatorios') openReports();
     if (v === 'ajustes') renderSettings();
@@ -1020,8 +1204,10 @@
   }
   document.querySelectorAll('nav.tabs button').forEach(function(b){ b.addEventListener('click', function(){ showView(b.dataset.view); }); });
 
+  function showOnly(v){ showView(v); }
+
   function render(){
-    $('meChip').textContent = me ? '👤 ' + me : '👤 Quem sou eu?';
+    $('meChip').innerHTML = (Cloud.isOn() ? '<span class="sync-dot on" id="syncDot"></span>' : '👤 ') + esc(me ? me : 'Quem sou eu?');
     renderHome();
     renderBills();
   }
@@ -1030,9 +1216,13 @@
     navigator.serviceWorker.register('sw.js').catch(function(){});
   }
 
-  render();
-  checkBillReminders();
-  if (!me) showView('ajustes');
+  function ready(){
+    showView('inicio');
+    render();
+    checkBillReminders();
+    if (!me) showView('ajustes');
+  }
+  if (Cloud.enabled) Cloud.start(ready); else ready();
 })();
 </script>
 </body>

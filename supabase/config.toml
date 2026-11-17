@@ -1,0 +1,4 @@
+# A Meta chama a função do WhatsApp sem login do Supabase;
+# a segurança vem da assinatura conferida com WA_APP_SECRET.
+[functions.whatsapp]
+verify_jwt = false
