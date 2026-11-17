@@ -964,21 +964,69 @@
     checkLimitAlerts();
   });
 
-  /* ---------- Voz ---------- */
+  /* ---------- Voz ----------
+     Cada toque cria um reconhecimento novo (alguns celulares travam ao reaproveitar),
+     mostra o texto enquanto a pessoa fala e tem um tempo máximo, para o botão
+     nunca ficar preso em "ouvindo". */
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (SR){
     $('btnMic').classList.remove('hidden');
-    var rec = new SR(); rec.lang = 'pt-BR'; rec.continuous = false; rec.interimResults = false;
-    var listening = false, defaultHint = $('hintText').textContent;
-    rec.onstart = function(){ listening = true; $('btnMic').classList.add('listening'); $('hintText').textContent = 'Ouvindo... ex: "mercado 120 no C6"'; };
-    rec.onresult = function(ev){
-      $('quickInput').value = ev.results[0][0].transcript;
-      if ($('quickForm').requestSubmit) $('quickForm').requestSubmit();
-      else $('quickForm').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
-    };
-    rec.onerror = function(){ $('hintText').textContent = 'Não consegui ouvir. Tente de novo ou digite.'; };
-    rec.onend = function(){ listening = false; $('btnMic').classList.remove('listening'); setTimeout(function(){ $('hintText').textContent = defaultHint; }, 2500); };
-    $('btnMic').addEventListener('click', function(){ if (listening){ rec.stop(); return; } try { rec.start(); } catch(e){} });
+    var rec = null, heard = '', submitted = false, safety = null, hintTimer = null;
+    var defaultHint = $('hintText').textContent;
+
+    function hint(t, keep){
+      clearTimeout(hintTimer);
+      $('hintText').textContent = t;
+      if (!keep) hintTimer = setTimeout(function(){ $('hintText').textContent = defaultHint; }, 4000);
+    }
+    function finish(){
+      clearTimeout(safety); safety = null;
+      var r = rec; rec = null;
+      $('btnMic').classList.remove('listening');
+      if (r){ r.onresult = r.onerror = r.onend = null; try { r.abort(); } catch(e){} }
+      if (heard && !submitted){
+        submitted = true;
+        clearTimeout(hintTimer); $('hintText').textContent = defaultHint;
+        $('quickInput').value = heard;
+        if ($('quickForm').requestSubmit) $('quickForm').requestSubmit();
+        else $('quickForm').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
+      }
+    }
+    function startListening(){
+      heard = ''; submitted = false;
+      try { rec = new SR(); } catch(e){ hint('O microfone não funciona neste navegador. Use o microfone do teclado.'); return; }
+      rec.lang = 'pt-BR'; rec.continuous = false; rec.interimResults = true; rec.maxAlternatives = 1;
+      rec.onresult = function(ev){
+        var txt = '', isFinal = false;
+        for (var i = 0; i < ev.results.length; i++){ txt += ev.results[i][0].transcript; if (ev.results[i].isFinal) isFinal = true; }
+        heard = txt.trim();
+        $('quickInput').value = heard;
+        if (isFinal) finish();
+      };
+      rec.onerror = function(ev){
+        var code = ev && ev.error;
+        if (code === 'not-allowed' || code === 'service-not-allowed'){
+          hint('O celular bloqueou o microfone para este site. Libere nas configurações do navegador ou use o microfone do teclado.');
+        } else if (code === 'no-speech'){
+          hint('Não ouvi nada. Toque no 🎤 e fale logo em seguida.');
+        } else if (code !== 'aborted'){
+          hint('Não consegui ouvir. Tente de novo ou use o microfone do teclado.');
+        }
+        finish();
+      };
+      rec.onend = finish;
+      $('btnMic').classList.add('listening');
+      hint('Ouvindo... ex: "mercado 120 no C6". Toque de novo para parar.', true);
+      // nunca fica mais de 10 segundos ouvindo
+      safety = setTimeout(function(){ if (!heard) hint('Não ouvi nada. Tente de novo.'); finish(); }, 10000);
+      try { rec.start(); } catch(e){ hint('Não consegui ligar o microfone. Tente de novo.'); finish(); }
+    }
+    $('btnMic').addEventListener('click', function(){
+      if (rec){ finish(); return; }
+      startListening();
+    });
+    // se a pessoa sair do app no meio, para de ouvir
+    document.addEventListener('visibilitychange', function(){ if (document.hidden && rec) finish(); });
   }
 
   /* ---------- Contas fixas ---------- */

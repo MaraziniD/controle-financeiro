@@ -1,5 +1,5 @@
 // Service worker: deixa o app abrir sem internet e permite mostrar notificações.
-var CACHE = 'financas-v4';
+var CACHE = 'financas-v5';
 var FILES = ['./', 'index.html', 'config.js', 'manifest.json', 'icon.svg'];
 
 self.addEventListener('install', function(e){
