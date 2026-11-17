@@ -4,5 +4,7 @@
 // Deixe vazio para o app guardar tudo só no celular.
 window.FINANCAS_CONFIG = {
   supabaseUrl: 'https://zwliencmevztydbaxulz.supabase.co',
-  supabaseAnonKey: 'sb_publishable___5ubuanTQOLAe7M2w8yOQ_65QJvws2'
+  supabaseAnonKey: 'sb_publishable___5ubuanTQOLAe7M2w8yOQ_65QJvws2',
+  // Usuário do bot do Telegram, sem o @ (deixe vazio para esconder o botão)
+  telegramBot: ''
 };

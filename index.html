@@ -228,6 +228,12 @@
       <div class="two" id="catFields"></div>
     </div>
 
+    <div class="card setting-group hidden" id="telegramCard">
+      <h3>Assistente no Telegram</h3>
+      <div class="muted-note" id="telegramText">Lance gastos mandando mensagem ou foto da nota, e receba os avisos de limite, de contas e das compras do outro.</div>
+      <button class="btn" id="btnTelegram">✈️ Conectar Telegram</button>
+    </div>
+
     <div class="card setting-group">
       <h3>Avisos</h3>
       <div class="muted-note">O app avisa quando um limite chega a 70%, 90% e 100%, e quando uma conta fixa está para vencer.</div>
@@ -482,8 +488,24 @@
         var err = results.filter(function(r){ return r && r.error; })[0];
         if (err) throw err.error;
         takeSnapshot(); setStatus('on');
+        flushNotify();
       }).catch(function(err){ console.error(err); setStatus('err'); })
         .then(function(){ busy = false; if (again){ again = false; push(); } });
+    }
+
+    var pending = { expenseIds: [], alerts: [] };
+    function flushNotify(){
+      if (!pending.expenseIds.length && !pending.alerts.length) return;
+      var body = pending; pending = { expenseIds: [], alerts: [] };
+      sb.auth.getSession().then(function(r){
+        var token = r.data && r.data.session && r.data.session.access_token;
+        if (!token) return;
+        return fetch(cfg.supabaseUrl + '/functions/v1/telegram', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token, 'apikey': cfg.supabaseAnonKey },
+          body: JSON.stringify(body)
+        });
+      }).catch(function(err){ console.warn('aviso no Telegram não enviado', err); });
     }
 
     function pull(){
@@ -557,6 +579,8 @@
       });
     }
 
+    function schedulePush(){ if (!enabled || !householdId) return; clearTimeout(timer); timer = setTimeout(push, 300); }
+
     function setupLogin(){
       $('btnLogin').onclick = function(){
         var email = $('loginEmail').value.trim();
@@ -569,10 +593,25 @@
       };
     }
 
+    function telegramStatus(){
+      return sb.from('members').select('telegram_chat_id').eq('household_id', householdId).eq('name', me).maybeSingle()
+        .then(function(r){ return !!(r.data && r.data.telegram_chat_id); });
+    }
+    function telegramConnect(){
+      return sb.rpc('telegram_link_code').then(function(r){
+        if (r.error) throw r.error;
+        location.href = 'https://t.me/' + cfg.telegramBot + '?start=' + r.data;
+      });
+    }
+
     return {
       enabled: enabled,
+      hasTelegram: !!cfg.telegramBot,
+      telegramStatus: telegramStatus,
+      telegramConnect: telegramConnect,
+      notify: function(kind, value){ if (!householdId) return; pending[kind].push(value); schedulePush(); },
       start: start,
-      schedule: function(){ if (!enabled || !householdId) return; clearTimeout(timer); timer = setTimeout(push, 300); },
+      schedule: schedulePush,
       signOut: function(){ if (sb) sb.auth.signOut().then(function(){ Store.save('financas.uploaded', false); location.reload(); }); },
       isOn: function(){ return !!householdId; }
     };
@@ -674,6 +713,7 @@
     });
     Store.save('financas.alertsSent', alertsSent); Cloud.schedule();
     fired.forEach(function(f){
+      Cloud.notify('alerts', f.msg);
       showAlert(f.t >= 100 ? '🚨' : '⚠️', f.msg);
       notify(f.t >= 100 ? 'Limite estourado' : 'Limite chegando', f.msg);
     });
@@ -917,6 +957,7 @@
     var e = { id: uid(), text: p.desc, amount: p.amount, category: categorize(p.desc), card: p.card || selectedCard || null, person: me || null, date: new Date().toISOString() };
     expenses.push(e);
     saveExpenses();
+    Cloud.notify('expenseIds', e.id);
     input.value = '';
     render();
     showToast(e);
@@ -1128,6 +1169,14 @@
       return '<div class="field"><label>' + CATS[c].icon + ' ' + c + '</label><input type="number" inputmode="decimal" data-cat="' + c + '" value="' + (num(settings.catLimits[c]) || '') + '"></div>';
     }).join('');
 
+    var tgCard = $('telegramCard');
+    tgCard.classList.toggle('hidden', !(Cloud.isOn() && Cloud.hasTelegram));
+    if (Cloud.isOn() && Cloud.hasTelegram){
+      Cloud.telegramStatus().then(function(ok){
+        $('btnTelegram').textContent = ok ? '✅ Telegram conectado (toque para reconectar)' : '✈️ Conectar Telegram';
+      });
+    }
+
     var btn = $('btnNotify');
     if (!('Notification' in window)){ btn.textContent = 'Este navegador não suporta notificações'; btn.disabled = true; }
     else if (Notification.permission === 'granted'){ btn.textContent = '✅ Notificações ativadas'; }
@@ -1143,6 +1192,13 @@
     render();
     checkLimitAlerts();
     var b = $('btnSaveSettings'); b.textContent = '✅ Salvo!'; setTimeout(function(){ b.textContent = 'Salvar ajustes'; }, 1500);
+  });
+
+  $('btnTelegram').addEventListener('click', function(){
+    var b = this; b.disabled = true; b.textContent = 'Abrindo o Telegram...';
+    Cloud.telegramConnect().catch(function(err){
+      console.error(err); b.textContent = 'Não consegui gerar o código. Tente de novo.';
+    }).then(function(){ setTimeout(function(){ b.disabled = false; }, 3000); });
   });
 
   $('btnNotify').addEventListener('click', function(){
