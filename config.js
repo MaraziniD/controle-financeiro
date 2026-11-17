@@ -6,5 +6,5 @@ window.FINANCAS_CONFIG = {
   supabaseUrl: 'https://zwliencmevztydbaxulz.supabase.co',
   supabaseAnonKey: 'sb_publishable___5ubuanTQOLAe7M2w8yOQ_65QJvws2',
   // Usuário do bot do Telegram, sem o @ (deixe vazio para esconder o botão)
-  telegramBot: ''
+  telegramBot: 'financas_dan_mi_bot'
 };
